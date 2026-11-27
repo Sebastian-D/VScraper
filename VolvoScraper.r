@@ -118,28 +118,43 @@ current_year <- as.numeric(format(Sys.Date(), "%Y"))
 model_years <- 2020:current_year
 
 all_cars <- list()
+problems <- character()
 
 for (model_year in model_years) {
   message(paste("Starting to scrape model year", model_year))
   best <- NULL
-  # Retry the model year if fewer cars were collected than the site reports
+  # Retry the model year if the results page didn't render (no vehicle count shown;
+  # a year with no cars still shows "0") or fewer cars were collected than reported
   for (attempt in 1:3) {
     res <- scrape_model_year(model_year)
-    if (is.null(best) || nrow(res$data) > nrow(best$data)) best <- res
-    if (is.na(res$total) || nrow(res$data) >= res$total) break
-    message(sprintf("Model year %d: got %d of %d cars, retrying (attempt %d)",
-                    model_year, nrow(res$data), res$total, attempt))
+    if (is.null(best) || nrow(res$data) > nrow(best$data) || is.na(best$total)) best <- res
+    if (!is.na(res$total) && nrow(res$data) >= res$total) break
+    message(sprintf("Model year %d attempt %d: got %d cars, site reports %s; retrying in 30 s",
+                    model_year, attempt, nrow(res$data), res$total))
+    Sys.sleep(30)
   }
   message(sprintf("Model year %d: %d cars collected, site reports %s", model_year, nrow(best$data), best$total))
-  if (!is.na(best$total) && nrow(best$data) < best$total) {
-    warning(sprintf("Model year %d incomplete: %d of %d cars", model_year, nrow(best$data), best$total))
+  if (is.na(best$total) || nrow(best$data) < best$total) {
+    problems <- c(problems, sprintf("Model year %d incomplete: %d cars collected, site reports %s",
+                                    model_year, nrow(best$data), best$total))
+    # Keep what the browser saw, for diagnosis (uploaded by the workflow on failure)
+    dir.create("debug", showWarnings = FALSE)
+    try(b$screenshot(sprintf("debug/model_year_%d.png", model_year)), silent = TRUE)
+    try(writeLines(b$Runtime$evaluate("document.documentElement.outerHTML")$result$value,
+                   sprintf("debug/model_year_%d.html", model_year)), silent = TRUE)
   }
   all_cars[[as.character(model_year)]] <- best$data
 }
 
 final_df <- bind_rows(all_cars)
 
-if (nrow(final_df) == 0) stop("Scrape returned no cars; leaving the CSV untouched.")
+# Fail the run visibly: "::error::" lines show up as annotations on the GitHub run
+fail_run <- function(msgs) {
+  cat(paste0("::error::", msgs, "\n"), sep = "")
+  quit(status = 1)
+}
+
+if (nrow(final_df) == 0) fail_run(c(problems, "Scrape returned no cars; leaving the CSV untouched."))
 
 # A car can show up on two pages if listings shift while paging: keep one row per car.
 n_before <- nrow(final_df)
@@ -163,3 +178,6 @@ if (file.exists(csv_path)) {
 
 final_df <- final_df %>% relocate(listing_id)
 write_excel_csv(final_df, csv_path)
+
+# Partial data is saved (the processing script flags incomplete scrapes), but the run fails
+if (length(problems) > 0) fail_run(problems)
