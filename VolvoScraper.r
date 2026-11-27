@@ -19,9 +19,14 @@ get_rendered_html <- function(timeout = 20) {
     n_cards <- b$Runtime$evaluate(
       "document.querySelectorAll('.card-main-container').length"
     )$result$value
+    count_text <- b$Runtime$evaluate(
+      "(document.querySelector('[data-e2e=\"@searchPage/vehicleCount\"]') || {}).textContent || ''"
+    )$result$value
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
     # Cards found: give the rest of the page a moment to finish rendering
     if (n_cards > 0) { Sys.sleep(1); break }
+    # Page rendered and the site reports no cars for this search
+    if (str_trim(count_text) == "0") break
     if (elapsed > timeout) break
   }
   b$Runtime$evaluate("document.documentElement.outerHTML")$result$value %>%
@@ -99,13 +104,20 @@ scrape_model_year <- function(model_year) {
   pages <- list()
   total <- NA
   page <- 1
+  n_cars <- function() n_distinct(bind_rows(pages)$listing_id)
   repeat {
     message(paste("Scraping page", page))
     res <- scrape_volvo_page(model_year, page)
+    if (is.na(total)) total <- res$total
+    # The site reports no cars for this year: nothing more to fetch
+    if (is.null(res$data) && isTRUE(total == 0)) break
     if (is.null(res$data)) res <- scrape_volvo_page(model_year, page)
     if (is.na(total)) total <- res$total
     if (is.null(res$data)) break
     pages[[page]] <- res$data
+    # Stop once every car the site reports has been collected, instead of
+    # requesting (and waiting out) an empty page after the last one
+    if (!is.na(total) && n_cars() >= total) break
     page <- page + 1
   }
   cars <- bind_rows(pages)

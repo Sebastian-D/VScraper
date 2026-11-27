@@ -1,12 +1,12 @@
 # Match report
 
-Generated 2026-11-27 from `data/volvo_price_tracker.csv` (28 scrapes, 2026-05-06 to 2026-11-15).
+Generated 2026-11-27 from `data/volvo_price_tracker.csv` (29 scrapes, 2026-05-06 to 2026-11-27).
 
 ## Input cleaning
-- Raw rows: 21565
+- Raw rows: 22269
 - Exact duplicate rows removed: 1396
 - Same listing_id twice on one date, removed: 0
-- Observations kept: 20169
+- Observations kept: 20873
 
 Exact duplicates by date:
 
@@ -51,24 +51,25 @@ Gaps of more than 8 days between scrapes:
 | from | to | days |
 |---|---|---|
 | 2026-09-13 | 2026-09-27 | 14 |
+| 2026-11-15 | 2026-11-27 | 12 |
 
 
 ## Linking
 - Linked by listing_id: 0
-- Linked by exact fingerprint: 14435
-- Linked by mileage creep (same description, up to 150 mil/week, 10 if a scrape was missed): 409
-- Linked despite edited description (same mileage): 721
-- Started a new car: 4604
-- Of which ambiguous (several candidates, left unlinked): 93 rows
+- Linked by exact fingerprint: 14815
+- Linked by mileage creep (same description, up to 150 mil/week, 10 if a scrape was missed): 439
+- Linked despite edited description (same mileage): 780
+- Started a new car: 4839
+- Of which ambiguous (several candidates, left unlinked): 98 rows
 
 ## Cars
-- Unique cars: 4604
-- Active: 675, presumed sold: 3929
-- Cars with at least one fuzzy link: 894
-- Cars touched by an ambiguous match: 93
-- Seen in only one scrape: 1191
+- Unique cars: 4839
+- Active: 818, presumed sold: 4021
+- Cars with at least one fuzzy link: 953
+- Cars touched by an ambiguous match: 98
+- Seen in only one scrape: 1319
 - Already listed at first scrape (true listing date unknown): 1104
-- Cars with at least one price drop: 1017
+- Cars with at least one price drop: 1113
 
 ## Ambiguous cases (first 25)
 
