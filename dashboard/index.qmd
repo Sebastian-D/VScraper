@@ -1,0 +1,373 @@
+---
+title: "Used electric Volvo prices"
+format:
+  dashboard:
+    theme: cosmo
+    css: styles.css
+    mainfont: system-ui, -apple-system, "Segoe UI", sans-serif
+    nav-buttons:
+      - icon: github
+        href: https://github.com/Sebastian-D/VScraper
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(plotly)
+library(crosstalk)
+library(DT)
+
+cars  <- read_csv("../data/cars_history.csv", show_col_types = FALSE)
+obs   <- read_csv("../data/car_observations.csv", show_col_types = FALSE)
+scrapes <- read_csv("../data/scrape_dates.csv", show_col_types = FALSE)
+
+latest <- max(scrapes$scrape_date)
+
+# Fixed colour per model family (colour follows the entity, never its rank)
+family_levels <- c("EX40 / XC40", "EC40 / C40", "EX30", "EX90", "ES90")
+family_cols   <- c("#257de0", "#f47230", "#00b894", "#f2a600", "#ee7fac") |> set_names(family_levels)
+
+# Model years: five groups on an ordinal blue ramp (newer = darker) - the four newest
+# years, plus everything older folded into one group
+newest      <- sort(unique(obs$model_year), decreasing = TRUE)
+cutoff      <- newest[min(4, length(newest))]          # oldest year shown on its own
+older_label <- paste0(cutoff - 1, " or older")
+year_label  <- function(y) if_else(y < cutoff, older_label, as.character(y))
+year_levels <- c(older_label, as.character(sort(newest[newest >= cutoff])))
+year_cols   <- c("#84b9f3", "#519ced", "#2370cd", "#1757ac", "#0e3d7e") |>
+  tail(length(year_levels)) |> set_names(year_levels)
+
+obs  <- obs  |> mutate(model_family = factor(model_family, family_levels),
+                       year_group = factor(year_label(model_year), year_levels))
+cars <- cars |> mutate(model_family = factor(model_family, family_levels),
+                       year_group = factor(year_label(model_year), year_levels))
+
+kr  <- scales::label_number(big.mark = " ", suffix = " kr")
+num <- scales::label_number(big.mark = " ")
+
+# Shared plotly styling: recessive grid, system font, no mode bar clutter
+ui_font <- "system-ui, -apple-system, Segoe UI, sans-serif"
+style_plot <- function(p, ytitle = "", xtitle = "", top = 10) {
+  p |>
+    layout(font = list(family = ui_font, color = "#191919"),
+           separators = ". ",   # decimal point, space as thousands separator
+           xaxis = list(title = list(text = xtitle), gridcolor = "#e7e7e7", linecolor = "#c2c2c2", zeroline = FALSE),
+           yaxis = list(title = list(text = ytitle), gridcolor = "#e7e7e7", linecolor = "#c2c2c2", zeroline = FALSE),
+           legend = list(orientation = "h", y = -0.15, traceorder = "normal"),
+           hoverlabel = list(font = list(family = ui_font)),
+           margin = list(l = 10, r = 10, t = top, b = 10)) |>
+    config(displaylogo = FALSE,
+           modeBarButtonsToRemove = c("select2d", "lasso2d", "autoScale2d", "toggleSpikelines"))
+}
+
+# ggplot theme for the faceted charts (converted with ggplotly)
+theme_dash <- function() {
+  theme_minimal(base_family = "sans-serif") +
+    theme(panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "#e7e7e7"),
+          strip.text = element_text(face = "bold", hjust = 0, colour = "#191919"),
+          axis.text = element_text(colour = "#666666"), panel.spacing = unit(1.2, "lines"))
+}
+
+# Filters laid out in one row above the charts
+filter_row <- function(...) {
+  htmltools::div(style = "display: flex; flex-wrap: wrap; gap: 0.5rem 2.5rem; align-items: flex-start; width: 100%;", ...)
+}
+
+# Price medians leave out incomplete scrapes (e.g. 2026-08-09), which skew the mix
+obs_complete <- obs |> semi_join(filter(scrapes, complete), by = "scrape_date")
+
+# Sunday scrapes that are missing entirely (no data saved that week)
+expected <- seq(min(scrapes$scrape_date[weekdays(scrapes$scrape_date) == "Sunday"]),
+                latest, by = "week")
+missing_weeks <- expected[!map_lgl(expected, ~ any(abs(as.numeric(scrapes$scrape_date - .x)) <= 3))]
+incomplete <- scrapes |> filter(!complete)
+
+# Cars on sale at the latest scrape
+current <- obs |> filter(scrape_date == latest)
+# Sold cars whose whole listing period was observed
+sold <- cars |> filter(status == "presumed_sold", !listed_before_tracking)
+```
+
+# Overview
+
+## Row {height=20%}
+
+```{r}
+#| content: valuebox
+#| title: "Data last updated"
+list(icon = "calendar-check", color = "light", value = format(latest, "%d %b %Y"))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Cars for sale now"
+list(icon = "car-front", color = "light", value = num(nrow(current)))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Median asking price now"
+list(icon = "tag", color = "light", value = kr(median(current$price)))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Median time to sell"
+list(icon = "hourglass-split", color = "light",
+     value = paste(round(median(sold$days_on_market) / 7, 1), "weeks"))
+```
+
+## Row
+
+### Column {width=50%}
+
+```{r}
+#| title: Cars for sale per scrape
+inv <- obs |> count(scrape_date, model_family)
+p <- plot_ly()
+for (f in family_levels) {
+  d <- filter(inv, model_family == f)
+  p <- add_bars(p, data = d, x = ~scrape_date, y = ~n, name = f,
+                marker = list(color = family_cols[[f]], line = list(color = "#ffffff", width = 1)),
+                hovertemplate = paste0(f, ": %{y} cars<extra></extra>"))
+}
+notes <- c(
+  map(incomplete$scrape_date, ~ list(x = .x, y = 0, yanchor = "bottom", text = "incomplete",
+                                     textangle = -90, showarrow = FALSE, font = list(color = "#666666", size = 11))),
+  map(missing_weeks, ~ list(x = .x, y = 0, yanchor = "bottom", text = "no data",
+                            textangle = -90, showarrow = FALSE, font = list(color = "#666666", size = 11))))
+p |> layout(barmode = "stack", bargap = 0.25, annotations = notes, hovermode = "x unified") |>
+  style_plot(ytitle = "Cars")
+```
+
+### Column {width=50%}
+
+```{r}
+#| title: Median asking price by model family
+trend <- obs_complete |> group_by(scrape_date, model_family) |>
+  summarise(price = median(price), n = n(), .groups = "drop") |>
+  filter(n >= 5)   # skip medians of very small groups
+p <- plot_ly()
+for (f in family_levels) {
+  d <- filter(trend, model_family == f)
+  if (nrow(d) == 0) next
+  p <- add_lines(p, data = d, x = ~scrape_date, y = ~price, name = f,
+                 line = list(color = family_cols[[f]], width = 2),
+                 text = ~n, hovertemplate = paste0(f, ": %{y:,.0f} kr (%{text} cars)<extra></extra>"))
+}
+p |> layout(hovermode = "x unified", yaxis = list(tickformat = ",.0f", ticksuffix = " kr")) |>
+  style_plot()
+```
+
+# Price trends
+
+## {.toolbar}
+
+```{r}
+trend_y <- obs_complete |> group_by(scrape_date, model_family, year_group) |>
+  summarise(price = median(price), n = n(), .groups = "drop") |>
+  filter(n >= 3) |>
+  mutate(key = paste(model_family, year_group, scrape_date),
+         tip = paste0(model_family, " ", year_group, "<br>", format(scrape_date, "%d %b %Y"),
+                      "<br>Median ", kr(price), " (", n, " cars)"))
+sd_trend <- SharedData$new(trend_y, key = ~key, group = "trend")
+filter_row(
+  filter_checkbox("t_family", "Model family", sd_trend, ~model_family, inline = TRUE),
+  filter_checkbox("t_year", "Model year", sd_trend, ~year_group, inline = TRUE))
+```
+
+## Row
+
+```{r}
+#| title: "Median asking price by model year. Weekly medians; groups under 3 cars and incomplete scrapes left out. A falling line mixes cars losing value with changes in which cars are for sale."
+g <- ggplot(sd_trend, aes(scrape_date, price, colour = year_group, group = year_group, text = tip)) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~model_family, ncol = 3, scales = "free_y") +
+  scale_colour_manual(values = year_cols, name = "Model year", drop = FALSE) +
+  scale_y_continuous(labels = scales::label_number(big.mark = " ", scale = 1e-3, suffix = "k")) +
+  labs(x = NULL, y = NULL) +
+  theme_dash()
+ggplotly(g, tooltip = "text") |> style_plot(top = 40) |> layout(legend = list(title = list(text = "Model year")))
+```
+
+# Value & mileage
+
+## {.toolbar}
+
+```{r}
+cur <- current |>
+  mutate(tip = paste0(model, " ", model_year, " · ", color, "<br>", description,
+                      "<br>", kr(price), " · ", num(mil), " mil"))
+sd_cur <- SharedData$new(cur, key = ~car_id, group = "current")
+filter_row(
+  filter_checkbox("c_family", "Model family", sd_cur, ~model_family, inline = TRUE),
+  filter_checkbox("c_year", "Model year", sd_cur, ~year_group, inline = TRUE),
+  filter_slider("c_mil", "Mileage (mil)", sd_cur, ~mil, step = 500, width = "260px", sep = " ", ticks = FALSE))
+```
+
+## Row {height=60%}
+
+```{r}
+#| title: !expr paste0("Asking price vs mileage, cars for sale on ", format(latest, "%d %b %Y"), " (1 mil = 10 km)")
+g <- ggplot(sd_cur, aes(mil, price, colour = year_group, text = tip)) +
+  geom_point(size = 1.8, alpha = 0.85) +
+  facet_wrap(~model_family, ncol = 5, scales = "free") +
+  scale_colour_manual(values = year_cols, name = "Model year", drop = FALSE) +
+  scale_x_continuous(labels = scales::label_number(scale = 1e-3, suffix = "k"), n.breaks = 3) +
+  scale_y_continuous(labels = scales::label_number(big.mark = " ", scale = 1e-3, suffix = "k")) +
+  labs(x = "Mileage (mil)", y = NULL) +
+  theme_dash()
+ggplotly(g, tooltip = "text") |> style_plot(top = 40) |> layout(legend = list(title = list(text = "Model year")))
+```
+
+## Row {height=40%}
+
+```{r}
+#| title: Median asking price by model year (cars for sale now)
+dep <- current |> group_by(model_family, model_year) |>
+  summarise(price = median(price), n = n(), .groups = "drop") |>
+  filter(n >= 3)
+p <- plot_ly()
+for (f in family_levels) {
+  d <- filter(dep, model_family == f)
+  if (nrow(d) == 0) next
+  p <- add_trace(p, data = d, x = ~model_year, y = ~price, name = f, type = "scatter", mode = "lines+markers",
+                 line = list(color = family_cols[[f]], width = 2),
+                 marker = list(color = family_cols[[f]], size = 8, line = list(color = "#ffffff", width = 2)),
+                 text = ~n, hovertemplate = paste0(f, " %{x}: %{y:,.0f} kr (%{text} cars)<extra></extra>"))
+}
+p |> layout(xaxis = list(dtick = 1), yaxis = list(tickformat = ",.0f", ticksuffix = " kr")) |>
+  style_plot(xtitle = "Model year")
+```
+
+# Time on market
+
+## Row {height=60%}
+
+```{r}
+#| title: Weeks on market for sold cars
+# Weeks between first and last scrape; 0 means it was seen in only one scrape
+tom <- sold |> mutate(weeks = round(days_on_market / 7)) |> count(weeks, model_family)
+p <- plot_ly()
+for (f in family_levels) {
+  d <- filter(tom, model_family == f)
+  p <- add_bars(p, data = d, x = ~weeks, y = ~n, name = f,
+                marker = list(color = family_cols[[f]], line = list(color = "#ffffff", width = 1)),
+                hovertemplate = paste0(f, ": %{y} cars<extra></extra>"))
+}
+p |> layout(barmode = "stack", bargap = 0.15, hovermode = "x unified",
+            xaxis = list(dtick = 2)) |>
+  style_plot(xtitle = "Weeks between first and last sighting (0 = seen once)", ytitle = "Cars")
+```
+
+## Row {height=40%}
+
+### Column {width=60%}
+
+```{r}
+#| title: By model family
+sold |> group_by(`Model family` = model_family) |>
+  summarise(`Sold cars` = n(),
+            `Median weeks` = round(median(days_on_market) / 7, 1),
+            `Sold within 2 weeks` = scales::percent(mean(days_on_market <= 14), 1),
+            `Had a price drop` = scales::percent(mean(n_price_drops > 0), 1),
+            `Median asking price` = kr(median(last_price))) |>
+  datatable(rownames = FALSE, options = list(dom = "t", ordering = FALSE), class = "compact")
+```
+
+### Column {width=40%}
+
+::: {.card title="How this is measured"}
+A car counts as **sold** once it has been missing from two complete weekly scrapes in a row.
+Cars already listed at the first scrape (`r format(min(scrapes$scrape_date), "%d %b %Y")`) are left out,
+because their real listing date is unknown. Cars still for sale are also left out, so long-listed
+cars are slightly under-represented. Time on market is measured between the first and last weekly
+sighting, so it can be off by up to a week at each end.
+:::
+
+# Price drops
+
+## {.toolbar}
+
+```{r}
+dropped <- cars |> filter(n_price_drops > 0) |>
+  mutate(label = paste0(model, " ", model_year, " ", color, " (", car_id, ")"))
+drop_obs <- obs |> semi_join(dropped, by = "car_id") |>
+  left_join(select(dropped, car_id, label), by = "car_id") |>
+  mutate(tip = paste0(label, "<br>", format(scrape_date, "%d %b %Y"), ": ", kr(price)))
+dropped_tbl <- dropped |>
+  arrange(desc(total_price_drop)) |>
+  transmute(Car = car_id, Model = model, Year = model_year, Colour = color, Description = description,
+            `First price` = first_price, `Latest price` = last_price, `Total cut` = total_price_drop,
+            `Change %` = price_change_pct, Cuts = n_price_drops,
+            Status = if_else(status == "active", "for sale", "sold"),
+            `First seen` = first_seen, `Last seen` = last_seen)
+sd_drop_obs  <- SharedData$new(drop_obs, key = ~car_id, group = "drops")
+sd_drop_cars <- SharedData$new(dropped_tbl, key = ~Car, group = "drops")
+top3 <- dropped |> slice_max(total_price_drop, n = 3, with_ties = FALSE) |> pull(label)
+htmltools::tagList(
+  filter_row(
+    htmltools::div(style = "min-width: 340px; flex: 1;", filter_select("d_car", "Car", sd_drop_obs, ~label)),
+    filter_checkbox("d_family", "Model family", sd_drop_obs, ~model_family, inline = TRUE),
+    filter_checkbox("d_status", "Status", sd_drop_cars, ~Status, inline = TRUE)),
+  # Preselect the three largest cuts once the select box exists
+  # (filter_select() in this crosstalk version has no `selected` argument)
+  htmltools::tags$script(htmltools::HTML(sprintf("
+    (function preselect(tries) {
+      var el = document.querySelector('#d_car select');
+      if (el && el.selectize) { el.selectize.setValue(%s); return; }
+      if (tries > 0) setTimeout(function () { preselect(tries - 1); }, 200);
+    })(50);", jsonlite::toJSON(top3))))
+)
+```
+
+## Row {height=55%}
+
+```{r}
+#| title: !expr paste(num(nrow(dropped)), "cars have had a price cut. Showing the three largest; pick other cars in the box above, or clear it to show all.")
+g <- ggplot(sd_drop_obs, aes(scrape_date, price, group = car_id, colour = model_family, text = tip)) +
+  geom_step(linewidth = 0.6, direction = "hv") +
+  geom_point(size = 1.5) +
+  scale_colour_manual(values = family_cols, name = "Model family", drop = FALSE) +
+  scale_y_continuous(labels = scales::label_number(big.mark = " ", suffix = " kr")) +
+  labs(x = NULL, y = NULL) +
+  theme_dash()
+ggplotly(g, tooltip = "text") |> style_plot()
+```
+
+## Row {height=45%}
+
+```{r}
+#| title: Cars with price cuts
+sd_drop_cars |>
+  datatable(rownames = FALSE, class = "compact nowrap",
+            options = list(bPaginate = TRUE, dom = "ifrtp", language = list(info = "Showing _START_ to _END_ of _TOTAL_ cars"), pageLength = 10, scrollX = TRUE)) |>
+  formatCurrency(c("First price", "Latest price", "Total cut"), currency = " kr", before = FALSE,
+                 digits = 0, mark = " ")
+```
+
+# All cars
+
+```{r}
+#| title: Every car seen, with its price history
+# Compact price history: the price at each change, e.g. "409 900 → 399 900 → 389 900"
+hist_str <- obs |> arrange(car_id, scrape_date) |> group_by(car_id) |>
+  filter(price != lag(price, default = -1)) |>
+  summarise(`Price history` = paste(num(price), collapse = " → "))
+cars |>
+  left_join(hist_str, by = "car_id") |>
+  transmute(Car = car_id, Model = model, Family = model_family, Year = model_year, Colour = color,
+            Description = description, `Power (hk)` = engine_hk, `Mileage (mil)` = last_mil,
+            `Latest price` = last_price, `Price history`, `Change %` = price_change_pct,
+            Status = status, `First seen` = first_seen, `Last seen` = last_seen,
+            `Days listed` = days_on_market, `Listing ID` = listing_id) |>
+  arrange(desc(`Last seen`), Family) |>
+  datatable(rownames = FALSE, filter = "top", class = "compact nowrap",
+            # Quarto dashboards switch DT paging off by default (bPaginate, dom); thousands of rows need it
+            options = list(bPaginate = TRUE, dom = "ifrtp", language = list(info = "Showing _START_ to _END_ of _TOTAL_ cars"), pageLength = 25, scrollX = TRUE, deferRender = TRUE)) |>
+  formatCurrency("Latest price", currency = " kr", before = FALSE, digits = 0, mark = " ")
+```

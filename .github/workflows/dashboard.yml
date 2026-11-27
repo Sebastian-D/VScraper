@@ -1,0 +1,94 @@
+name: Build dashboard
+
+on:
+  # After every scraper run. (The scraper pushes with GITHUB_TOKEN, and such pushes
+  # don't trigger other workflows, so a push trigger alone would never fire for them.)
+  workflow_run:
+    workflows: ["Volvo Price Scraper"]
+    types: [completed]
+  # Manual edits to the data, processing or dashboard code
+  push:
+    branches: [main]
+    paths:
+      - 'data/volvo_price_tracker.csv'
+      - 'R/**'
+      - 'dashboard/**'
+      - '.github/workflows/dashboard.yml'
+  # Weekly fallback, after both Sunday scraper runs
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit the processed data back
+  pages: write      # deploy to GitHub Pages
+  id-token: write
+
+# One build at a time; a newer run waits rather than cancelling a deploy in progress
+concurrency:
+  group: dashboard
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          # After a scraper run: latest main, including its data commit. Otherwise the
+          # branch the run was started on (so a manual run on a branch builds that branch).
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.ref }}
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install R packages (cached)
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::tidyverse
+            any::plotly
+            any::DT
+            any::crosstalk
+            any::rmarkdown
+            any::knitr
+
+      - name: Setup Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
+      - name: Process data (per-car history)
+        run: Rscript R/process_data.R
+
+      - name: Commit processed data
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add data/cars_history.csv data/car_observations.csv data/scrape_dates.csv data/match_report.md
+          git commit -m "Update processed data: $(date -u +%F)" || echo "No changes to commit"
+          git push
+
+      - name: Render dashboard
+        run: quarto render dashboard/index.qmd
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dashboard/_site
+
+  # Deploys only if the build succeeded, so a failed build leaves the previous site up
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

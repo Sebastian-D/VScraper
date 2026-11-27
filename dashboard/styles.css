@@ -1,0 +1,12 @@
+/* Keep value-box figures on one line */
+.bslib-value-box .value-box-value {
+  font-size: clamp(1.3rem, 2.2vw, 2rem) !important;
+  white-space: nowrap;
+}
+.bslib-value-box .value-box-title {
+  font-size: 0.95rem;
+}
+/* Aligned figures in tables */
+table.dataTable td {
+  font-variant-numeric: tabular-nums;
+}

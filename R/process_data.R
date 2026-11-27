@@ -19,6 +19,7 @@
 # Outputs:
 #   data/cars_history.csv     one row per car
 #   data/car_observations.csv one row per car per scrape (raw rows + car_id)
+#   data/scrape_dates.csv     one row per scrape date, with incomplete scrapes flagged
 #   data/match_report.md      counts for checking the matching logic
 
 suppressPackageStartupMessages(library(tidyverse))
@@ -33,6 +34,15 @@ MIL_PER_WEEK_GAP <- 10   # ...and when the car was missing from a complete scrap
 # often joined two different cars (trim level and price jumped).
 INCOMPLETE_RATIO <- 0.5  # a model year's scrape is incomplete below this share of its neighbours' median
 INCOMPLETE_MIN_REF <- 5  # ...only judged when the neighbours' median is at least this many cars
+
+# Volvo renamed its electric models (XC40 Recharge -> EX40, C40 Recharge -> EC40);
+# all cars here are electric, so "XC40" and "C40" are the same cars under older names.
+# Matching still uses the listed model; the family is for grouping in the dashboard.
+model_family <- function(model) {
+  case_when(model %in% c("XC40", "XC40 Recharge", "EX40") ~ "EX40 / XC40",
+            model %in% c("C40", "C40 Recharge", "EC40") ~ "EC40 / C40",
+            TRUE ~ model)
+}
 
 # Trim level named in a free-text description (NA if none)
 trim_of <- function(desc) {
@@ -199,7 +209,7 @@ cars <- obs %>%
     first_price = first(price), last_price = last(price),
     min_price = min(price), max_price = max(price),
     n_price_drops = sum(diff(price) < 0),
-    total_price_drop = -sum(pmin(diff(price), 0)),
+    total_price_drop = sum(pmax(-diff(price), 0)),
     n_price_increases = sum(diff(price) > 0),
     first_mil = first(mil), last_mil = last(mil),
     fuzzy_links = sum(match_method %in% c("creep", "desc_change")),
@@ -214,14 +224,24 @@ cars <- obs %>%
     listed_before_tracking = first_seen == dates[1],
     price_change_pct = round(100 * (last_price - first_price) / first_price, 1)) %>%
   select(-last_idx, -missed_since) %>%
+  mutate(model_family = model_family(model), .after = model) %>%
   arrange(first_seen, car_id)
 
 write_csv(cars, "data/cars_history.csv", na = "")
 obs %>%
-  select(car_id, listing_id, scrape_date, model, model_year, engine_hk, color,
+  mutate(model_family = model_family(model)) %>%
+  select(car_id, listing_id, scrape_date, model, model_family, model_year, engine_hk, color,
          description, mil, price, match_method, ambiguous) %>%
   arrange(car_id, scrape_date) %>%
   write_csv("data/car_observations.csv", na = "")
+
+# One row per scrape date, for marking incomplete scrapes in the dashboard
+year_counts %>%
+  group_by(scrape_date) %>%
+  summarise(cars = sum(n),
+            incomplete_model_years = paste(model_year[!complete], collapse = ", "),
+            complete = all(complete)) %>%
+  write_csv("data/scrape_dates.csv", na = "")
 
 # ---- Match report -----------------------------------------------------------
 amb <- bind_rows(ambiguous_cases)

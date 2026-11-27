@@ -1,2 +1,5 @@
 debug/
 .DS_Store
+dashboard/_site/
+dashboard/.quarto/
+dashboard/index_files/
